@@ -1,0 +1,32 @@
+# Secrets — NEVER commit these
+.env
+.env.local
+.pulse_encryption_key
+*.key
+*.pem
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+.venv/
+venv/
+env/
+*.egg-info/
+.pytest_cache/
+
+# Local databases
+*.db
+*.db-journal
+*.db.before-*
+pulse.db
+
+# OS / editor
+.DS_Store
+.idea/
+.vscode/
+*.swp
+
+# Logs
+*.log
+/tmp/
