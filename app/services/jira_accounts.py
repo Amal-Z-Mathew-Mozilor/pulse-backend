@@ -237,8 +237,20 @@ class AccountValidationError(ValueError):
     """Raised when a create/update violates a uniqueness or shape constraint."""
 
 
-async def _label_in_use(db: AsyncSession, label: str, exclude_id: int | None = None) -> bool:
+async def _label_in_use(
+    db: AsyncSession,
+    label: str,
+    organization_id: int | None = None,
+    exclude_id: int | None = None,
+) -> bool:
+    """Labels are unique PER ORGANIZATION. Two different orgs may each have
+    a Jira account labeled "Mozilor" without colliding."""
     stmt = select(JiraAccount).where(JiraAccount.label == label)
+    if organization_id is not None:
+        stmt = stmt.where(JiraAccount.organization_id == organization_id)
+    else:
+        # Legacy / unscoped callers — fall back to the old global check.
+        pass
     if exclude_id is not None:
         stmt = stmt.where(JiraAccount.id != exclude_id)
     return (await db.execute(stmt.limit(1))).scalar_one_or_none() is not None
@@ -284,8 +296,8 @@ async def create_account(
         raise AccountValidationError("label, base_url, email and api_token are required")
 
     async with session_scope() as db:
-        if await _label_in_use(db, label):
-            raise AccountValidationError(f"label '{label}' is already used by another account")
+        if await _label_in_use(db, label, organization_id=organization_id):
+            raise AccountValidationError(f"label '{label}' is already used by another account in this workspace")
         if webhook_secret and await _webhook_secret_in_use(db, webhook_secret):
             raise AccountValidationError("webhook_secret collides with another account")
 
@@ -336,8 +348,8 @@ async def update_account(
             label = label.strip()
             if not label:
                 raise AccountValidationError("label cannot be empty")
-            if await _label_in_use(db, label, exclude_id=account_id):
-                raise AccountValidationError(f"label '{label}' is already used by another account")
+            if await _label_in_use(db, label, organization_id=row.organization_id, exclude_id=account_id):
+                raise AccountValidationError(f"label '{label}' is already used by another account in this workspace")
             row.label = label
 
         if base_url is not None:

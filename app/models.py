@@ -82,7 +82,10 @@ class JiraAccount(Base):
     __tablename__ = "jira_accounts"
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
-    label: Mapped[str] = mapped_column(String(128), unique=True, index=True)
+    # Label is unique PER ORGANIZATION, not globally — two different
+    # orgs can each have a Jira account labeled "Mozilor" without colliding.
+    # The composite uniqueness is enforced via __table_args__ below.
+    label: Mapped[str] = mapped_column(String(128), index=True)
     base_url: Mapped[str] = mapped_column(String(256))
     email: Mapped[str] = mapped_column(String(256))
     api_token: Mapped[str] = mapped_column(String(1024))  # Fernet ciphertext
@@ -94,6 +97,12 @@ class JiraAccount(Base):
     )
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now, onupdate=_now)
+
+    __table_args__ = (
+        # Two different orgs may each have a Jira account labeled "Mozilor".
+        # Uniqueness applies within the org, not globally.
+        UniqueConstraint("organization_id", "label", name="ux_jira_accounts_org_label"),
+    )
 
 
 class Project(Base):
