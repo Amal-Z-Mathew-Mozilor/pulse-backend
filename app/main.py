@@ -167,6 +167,11 @@ app = FastAPI(title="Pulse — Organizational Memory", version="0.1.0", lifespan
 app.add_middleware(
     CORSMiddleware,
     allow_origins=settings.cors_origins_list,
+    # Also allow any Vercel preview deployment of the pulse-frontend project.
+    # Vercel creates a unique URL per build like:
+    #   pulse-frontend-<hash>-<team>.vercel.app
+    # Listing every one in CORS_ORIGINS is impractical — match by pattern instead.
+    allow_origin_regex=r"https://pulse-frontend-[a-z0-9-]+\.vercel\.app",
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
