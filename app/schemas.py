@@ -34,6 +34,12 @@ class FeatureOut(BaseModel):
     restored_reason: str | None = None
     created_at: datetime
     updated_at: datetime
+    # Workspace context — which connected Jira account this feature belongs to.
+    # NULL only when the parent JiraAccount was deleted (the Feature itself
+    # survives as historical organizational memory).
+    jira_account_id: int | None = None
+    jira_account_label: str | None = None
+    jira_base_url: str | None = None
 
 
 class FeatureSearchHit(BaseModel):

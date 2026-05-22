@@ -7,11 +7,51 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..db import get_session, session_scope
 from ..dependencies import get_current_user
-from ..models import AgentRun, Feature, User
+from ..models import AgentRun, Feature, JiraAccount, User
 from ..schemas import AgentRunOut, FeatureOut
 from ..services.vector_store import get_store
 
 router = APIRouter()
+
+
+async def _account_lookup(db: AsyncSession, organization_id: int | None) -> dict[int, tuple[str, str]]:
+    """Return {jira_account_id: (label, base_url)} for this org's Jira accounts.
+    Used to enrich FeatureOut with workspace context without an N+1 query."""
+    if organization_id is None:
+        return {}
+    rows = (await db.execute(
+        select(JiraAccount).where(JiraAccount.organization_id == organization_id)
+    )).scalars().all()
+    return {r.id: (r.label, r.base_url) for r in rows}
+
+
+def _feature_out(f: Feature, accounts: dict[int, tuple[str, str]]) -> FeatureOut:
+    """Build a FeatureOut, attaching the workspace label/base_url from the
+    Jira account map. NULL jira_account_id (historical features whose
+    account was deleted) is handled gracefully."""
+    label, base_url = (None, None)
+    if f.jira_account_id is not None:
+        label, base_url = accounts.get(f.jira_account_id, (None, None))
+    return FeatureOut(
+        id=f.id,
+        name=f.name,
+        summary=f.summary,
+        team=f.team,
+        product_group=f.product_group,
+        components=f.components or [],
+        status=f.status,
+        deprecation_reason=f.deprecation_reason,
+        ticket_key=f.ticket_key,
+        dependencies=f.dependencies or [],
+        changelog=f.changelog,
+        restored_at=f.restored_at,
+        restored_reason=f.restored_reason,
+        created_at=f.created_at,
+        updated_at=f.updated_at,
+        jira_account_id=f.jira_account_id,
+        jira_account_label=label,
+        jira_base_url=base_url,
+    )
 
 
 @router.get("/features", response_model=list[FeatureOut])
@@ -25,7 +65,8 @@ async def list_features(
     if status:
         stmt = stmt.where(Feature.status == status)
     rows = (await db.execute(stmt)).scalars().all()
-    return [FeatureOut.model_validate(r) for r in rows]
+    accounts = await _account_lookup(db, current_user.organization_id)
+    return [_feature_out(r, accounts) for r in rows]
 
 
 @router.get("/changelog", response_model=list[FeatureOut])
@@ -41,7 +82,8 @@ async def changelog(
         .limit(50)
     )
     rows = (await db.execute(stmt)).scalars().all()
-    return [FeatureOut.model_validate(r) for r in rows]
+    accounts = await _account_lookup(db, current_user.organization_id)
+    return [_feature_out(r, accounts) for r in rows]
 
 
 @router.get("/agent-runs", response_model=list[AgentRunOut])
@@ -134,4 +176,5 @@ async def restore_feature(
                 "organization_id": feature.organization_id,
             },
         )
-        return FeatureOut.model_validate(feature)
+        accounts = await _account_lookup(db, current_user.organization_id)
+        return _feature_out(feature, accounts)
