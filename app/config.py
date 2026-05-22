@@ -14,9 +14,11 @@ class Settings(BaseSettings):
     # to DATABASE_URL — fine for local dev.
     procrastinate_database_url: str = ""
     claude_model: str = "claude-opus-4-7"
-    # Faster model for interactive chat — Sonnet is 3-4x quicker than Opus
-    # for Q&A tasks. Heavy agents (duplicate, deprecation) still use claude_model.
-    claude_query_model: str = "claude-sonnet-4-6"
+    # Faster model for interactive chat — Haiku is ~3-5x quicker than Sonnet
+    # and plenty smart for the Q&A tasks the query agent does (search, summarize,
+    # cite). Heavy agents (duplicate, deprecation, documentation) still use
+    # claude_model (Opus) where reasoning quality matters more than latency.
+    claude_query_model: str = "claude-haiku-4-5-20251001"
     cors_origins: str = "http://localhost:5173"
 
     # Pinecone — if PINECONE_API_KEY is set we use real Pinecone, else in-memory.
