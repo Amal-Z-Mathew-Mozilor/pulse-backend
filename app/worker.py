@@ -61,7 +61,8 @@ def _conninfo() -> str:
 app = App(
     connector=PsycopgConnector(
         conninfo=_conninfo(),
-        kwargs={"min_size": 1, "max_size": 2},
+        min_size=1,
+        max_size=2,
     )
 )
 
