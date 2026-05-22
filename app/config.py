@@ -76,6 +76,12 @@ class Settings(BaseSettings):
     # Email sending via Resend (https://resend.com).
     # If empty, verification links are printed to the console instead.
     resend_api_key: str = ""
+    # Sender address for Resend. If unset, uses Resend's sandbox sender
+    # `onboarding@resend.dev` (works without domain verification but only
+    # delivers to the email address that owns the Resend account). For real
+    # production, verify your domain on Resend and set this to e.g.
+    # noreply@yourcompany.com
+    resend_from_email: str = ""
     frontend_url: str = "http://localhost:5173"
     app_name: str = "Pulse"
 
