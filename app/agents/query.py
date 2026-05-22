@@ -102,7 +102,7 @@ TOOLS = [
 ]
 
 
-async def run(query: str, organization_id: int | None = None):
+async def _build_system(organization_id: int | None) -> str:
     all_groups = await _existing_product_groups()
     active = set(await _active_product_groups())
     if all_groups:
@@ -111,7 +111,11 @@ async def run(query: str, organization_id: int | None = None):
         )
     else:
         groups_str = "(none registered yet)"
-    system = SYSTEM_TEMPLATE.format(product_groups=groups_str)
+    return SYSTEM_TEMPLATE.format(product_groups=groups_str)
+
+
+async def run(query: str, organization_id: int | None = None):
+    system = await _build_system(organization_id)
     user_message = f"User question:\n{query}"
     return await run_and_log(
         agent_name="query",
@@ -123,3 +127,29 @@ async def run(query: str, organization_id: int | None = None):
         model=get_settings().claude_query_model,
         organization_id=organization_id,
     )
+
+
+async def run_stream(query: str, organization_id: int | None = None):
+    """Streaming variant — yields {type, delta} events for the chatbot UI.
+    No agent_runs log row is written; streaming is a transient/UX-only path."""
+    from ..context import org_id_var
+    from ..services.claude_client import run_agent_stream
+
+    system = await _build_system(organization_id)
+    user_message = f"User question:\n{query}"
+
+    # Set the org_id context var so tool handlers (search_similar_features etc.)
+    # apply the multi-tenant filter — same as run_and_log does.
+    token = org_id_var.set(organization_id) if organization_id is not None else None
+    try:
+        async for event in run_agent_stream(
+            system=system,
+            user_message=user_message,
+            tools=TOOLS,
+            max_iterations=5,
+            model=get_settings().claude_query_model,
+        ):
+            yield event
+    finally:
+        if token is not None:
+            org_id_var.reset(token)

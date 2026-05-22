@@ -10,7 +10,7 @@ from __future__ import annotations
 import json
 import logging
 from dataclasses import dataclass, field
-from typing import Any, Awaitable, Callable
+from typing import Any, AsyncGenerator, Awaitable, Callable
 
 from anthropic import AsyncAnthropic
 
@@ -263,3 +263,112 @@ def _extract_ticket_key(text: str) -> str | None:
 
     m = re.search(r"\b([A-Z]{2,8}-\d+)\b", text)
     return m.group(1) if m else None
+
+
+# ----------------- streaming variant -----------------
+
+async def run_agent_stream(
+    *,
+    system: str,
+    user_message: str,
+    tools: list[ToolSpec],
+    max_iterations: int = 6,
+    model: str | None = None,
+) -> AsyncGenerator[dict[str, Any], None]:
+    """Stream version of run_agent. Yields one event-dict at a time:
+
+      {"type": "tool", "name": "search_similar_features"}  — a tool is about to run
+      {"type": "text", "delta": "Yep, looks "}              — a piece of the final answer
+      {"type": "done", "tool_calls": [...]}                 — final, with full tool log
+
+    Frontend renders each `text` delta immediately so the answer appears word
+    by word. Total wall-clock time is the same as run_agent, but the first
+    visible token arrives within ~1s instead of ~5s — feels ~5x faster.
+    """
+    client = _get_client()
+    if client is None:
+        # Stub mode: just produce the canned text in one chunk so the UI works.
+        result = await _stub_run(system=system, user_message=user_message, tools=tools)
+        yield {"type": "text", "delta": result.text}
+        yield {"type": "done", "tool_calls": result.tool_calls}
+        return
+
+    settings = get_settings()
+    effective_model = model or settings.claude_model
+    tool_index = {t.name: t for t in tools}
+    anthropic_tools = [t.to_anthropic_tool() for t in tools]
+
+    messages: list[dict[str, Any]] = [{"role": "user", "content": user_message}]
+    tool_calls_log: list[dict[str, Any]] = []
+
+    for _ in range(max_iterations):
+        # Open a streaming context. The SDK yields incremental events; we
+        # forward text deltas to the caller and collect tool_use blocks for
+        # post-stream dispatch.
+        async with client.messages.stream(
+            model=effective_model,
+            max_tokens=1024,
+            system=[
+                {
+                    "type": "text",
+                    "text": system,
+                    "cache_control": {"type": "ephemeral"},
+                }
+            ],
+            tools=anthropic_tools,
+            messages=messages,
+        ) as stream:
+            async for event in stream:
+                # The SDK exposes high-level events. We only care about text deltas
+                # here — tool_use blocks come through fully assembled at message_stop.
+                if getattr(event, "type", None) == "content_block_delta":
+                    delta = getattr(event, "delta", None)
+                    if delta is not None and getattr(delta, "type", None) == "text_delta":
+                        text_piece = getattr(delta, "text", "") or ""
+                        if text_piece:
+                            yield {"type": "text", "delta": text_piece}
+
+            final_msg = await stream.get_final_message()
+
+        stop_reason = final_msg.stop_reason
+        if stop_reason != "tool_use":
+            break
+
+        # Echo the assistant turn verbatim and run the requested tools.
+        messages.append({"role": "assistant", "content": final_msg.content})
+
+        tool_results: list[dict[str, Any]] = []
+        for block in final_msg.content:
+            if block.type != "tool_use":
+                continue
+            yield {"type": "tool", "name": block.name}
+
+            spec = tool_index.get(block.name)
+            tool_input = block.input or {}
+            if spec is None:
+                result_payload: dict[str, Any] = {"error": f"unknown tool: {block.name}"}
+                is_error = True
+            else:
+                try:
+                    result_payload = await spec.handler(tool_input)
+                    is_error = False
+                except Exception as exc:
+                    log.exception("tool %s failed", block.name)
+                    result_payload = {"error": str(exc)}
+                    is_error = True
+
+            tool_calls_log.append(
+                {"tool": block.name, "input": tool_input, "result": result_payload, "is_error": is_error}
+            )
+            tool_results.append(
+                {
+                    "type": "tool_result",
+                    "tool_use_id": block.id,
+                    "content": json.dumps(result_payload),
+                    "is_error": is_error,
+                }
+            )
+
+        messages.append({"role": "user", "content": tool_results})
+
+    yield {"type": "done", "tool_calls": tool_calls_log}
