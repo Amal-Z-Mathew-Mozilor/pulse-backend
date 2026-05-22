@@ -14,11 +14,27 @@ class Base(DeclarativeBase):
 
 _settings = get_settings()
 
-# Note: We use Supabase's *session* pooler (port 5432), not the transaction
-# pooler (6543). Session mode supports LISTEN/NOTIFY (required by
-# procrastinate) and prepared statements work normally — no special asyncpg
-# config needed.
-engine = create_async_engine(_settings.database_url, echo=False, future=True)
+# Use Supabase's transaction pooler (port 6543) for SQLAlchemy + pgvector —
+# it has 200+ connection capacity vs 15 on session mode. Procrastinate uses
+# a separate connection via PROCRASTINATE_DATABASE_URL (session pooler) because
+# it needs LISTEN/NOTIFY.
+#
+# Transaction-mode pooling rotates the backend session between queries, so:
+#   - asyncpg's prepared-statement cache must be disabled (statement_cache_size=0)
+#   - SQLAlchemy pool size is kept small to share fairly between workers
+_pooled = "pooler.supabase.com" in _settings.database_url or ":6543/" in _settings.database_url
+engine = create_async_engine(
+    _settings.database_url,
+    echo=False,
+    future=True,
+    pool_size=3,
+    max_overflow=2,
+    pool_pre_ping=True,
+    connect_args=(
+        {"statement_cache_size": 0, "prepared_statement_cache_size": 0}
+        if _pooled else {}
+    ),
+)
 SessionLocal = async_sessionmaker(engine, expire_on_commit=False, class_=AsyncSession)
 
 

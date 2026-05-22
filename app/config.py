@@ -7,6 +7,12 @@ class Settings(BaseSettings):
 
     anthropic_api_key: str = ""
     database_url: str = "sqlite+aiosqlite:///./pulse.db"
+    # Optional separate URL for procrastinate. Procrastinate uses LISTEN/NOTIFY
+    # which needs Supabase's *session* pooler (port 5432). The main app
+    # (SQLAlchemy, pgvector) can use the *transaction* pooler (port 6543) which
+    # has 200+ connection capacity vs 15 on session mode. If unset, falls back
+    # to DATABASE_URL — fine for local dev.
+    procrastinate_database_url: str = ""
     claude_model: str = "claude-opus-4-7"
     # Faster model for interactive chat — Sonnet is 3-4x quicker than Opus
     # for Q&A tasks. Heavy agents (duplicate, deprecation) still use claude_model.

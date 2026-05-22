@@ -40,10 +40,12 @@ log = logging.getLogger(__name__)
 
 
 def _conninfo() -> str:
-    """Build a libpq-style DSN from DATABASE_URL.
-    psycopg3 (used by procrastinate) takes the raw `postgresql://` form —
-    strip the SQLAlchemy-only `+asyncpg` driver tag if present."""
-    url = get_settings().database_url
+    """Build a libpq-style DSN for procrastinate.
+    Prefers PROCRASTINATE_DATABASE_URL (Supabase session pooler, port 5432) so
+    LISTEN/NOTIFY works. Falls back to DATABASE_URL if unset.
+    Strips the SQLAlchemy `+asyncpg` driver tag — psycopg uses raw libpq."""
+    s = get_settings()
+    url = s.procrastinate_database_url or s.database_url
     if url.startswith("postgresql+asyncpg://"):
         return url.replace("postgresql+asyncpg://", "postgresql://", 1)
     return url
@@ -51,7 +53,17 @@ def _conninfo() -> str:
 
 # The procrastinate App. Imported by both the worker (to consume jobs) and
 # the API process (to defer jobs). One source of truth for the queue config.
-app = App(connector=PsycopgConnector(conninfo=_conninfo()))
+#
+# Connection pool is intentionally small (max_size=2) because Supabase free-tier
+# session pooler caps total client connections at 15 — and the web + worker
+# processes BOTH open a pool. Two services × 2 connections = 4, leaving plenty
+# of headroom on the 15 cap.
+app = App(
+    connector=PsycopgConnector(
+        conninfo=_conninfo(),
+        kwargs={"min_size": 1, "max_size": 2},
+    )
+)
 
 
 # ----------------- task implementations -----------------
