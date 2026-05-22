@@ -254,6 +254,7 @@ async def alert_related_features(
     # base URLs in bulk below — see _build_jira_url.
     from ..models import JiraAccount as _JiraAccount
     account_rows = (await db.execute(select(_JiraAccount))).scalars().all()
+    account_label_by_id: dict[int, str] = {a.id: a.label for a in account_rows}
     account_base_by_id: dict[int, str] = {
         a.id: a.base_url.rstrip("/") for a in account_rows if a.base_url
     }
@@ -314,9 +315,20 @@ async def alert_related_features(
             if feat.jira_account_id is not None
             else None
         ) or default_base
+        feat_label = (
+            account_label_by_id.get(feat.jira_account_id)
+            if feat.jira_account_id is not None
+            else None
+        )
+        # Build FeatureOut from attributes, then attach the workspace info that
+        # the SQL model doesn't carry directly.
+        feature_out = FeatureOut.model_validate(feat)
+        feature_out.jira_account_id = feat.jira_account_id
+        feature_out.jira_account_label = feat_label
+        feature_out.jira_base_url = feat_base
         out.append(
             RelatedFeatureOut(
-                feature=FeatureOut.model_validate(feat),
+                feature=feature_out,
                 similarity_score=score,
                 open_in_jira_url=(f"{feat_base}/browse/{tk}" if feat_base else None),
             )
