@@ -23,13 +23,18 @@ _settings = get_settings()
 #   - asyncpg's prepared-statement cache must be disabled (statement_cache_size=0)
 #   - SQLAlchemy pool size is kept small to share fairly between workers
 _pooled = "pooler.supabase.com" in _settings.database_url or ":6543/" in _settings.database_url
+# Transaction-mode pooling lets us run a much larger SQLAlchemy pool — each
+# checkout doesn't tie up a backend session, only the duration of a single
+# transaction. Larger pool means concurrent polling from the frontend doesn't
+# queue. pool_pre_ping is off because it adds a round-trip per checkout, and
+# transaction-mode connections are already fresh per transaction.
 engine = create_async_engine(
     _settings.database_url,
     echo=False,
     future=True,
-    pool_size=3,
-    max_overflow=2,
-    pool_pre_ping=True,
+    pool_size=15,
+    max_overflow=10,
+    pool_recycle=300,
     connect_args=(
         {"statement_cache_size": 0, "prepared_statement_cache_size": 0}
         if _pooled else {}

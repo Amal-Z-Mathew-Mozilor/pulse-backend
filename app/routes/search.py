@@ -34,8 +34,21 @@ async def ask(
     body: AskRequest,
     current_user: User = Depends(get_current_user),
 ):
-    result = await query_agent.run(body.message, organization_id=current_user.organization_id)
-    return AskResponse(response=result.text or "(no response)", tool_calls=result.tool_calls)
+    try:
+        result = await query_agent.run(body.message, organization_id=current_user.organization_id)
+        return AskResponse(response=result.text or "(no response)", tool_calls=result.tool_calls)
+    except Exception as e:
+        # Translate transient Anthropic outages into a friendly user-facing
+        # message rather than a generic 500.
+        from anthropic import InternalServerError, APIStatusError
+        if isinstance(e, InternalServerError) or (
+            isinstance(e, APIStatusError) and getattr(e, "status_code", 0) in (529, 503)
+        ):
+            return AskResponse(
+                response="Claude is temporarily overloaded — try again in a minute.",
+                tool_calls=[],
+            )
+        raise
 
 
 @router.post("/search", response_model=list[FeatureSearchHit])
