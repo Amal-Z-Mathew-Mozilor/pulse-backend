@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 
-from ..context import jira_account_id_var, org_id_var
+from ..context import current_ticket_key_var, jira_account_id_var, org_id_var
 from ..db import session_scope
 from ..models import AgentRun
 from ..services.claude_client import AgentResult, ToolSpec, run_agent
@@ -24,6 +24,7 @@ async def run_and_log(
     # needing to thread it through every call site.
     org_token = org_id_var.set(organization_id)
     acct_token = jira_account_id_var.set(jira_account_id)
+    ticket_token = current_ticket_key_var.set(ticket_key)
     try:
         async with session_scope() as db:
             log = AgentRun(
@@ -53,5 +54,6 @@ async def run_and_log(
 
         return result
     finally:
+        current_ticket_key_var.reset(ticket_token)
         jira_account_id_var.reset(acct_token)
         org_id_var.reset(org_token)

@@ -14,7 +14,7 @@ from sqlalchemy import select, update as sqla_update
 import re
 from datetime import datetime, timezone
 
-from ..context import jira_account_id_var, org_id_var
+from ..context import current_ticket_key_var, jira_account_id_var, org_id_var
 from ..db import session_scope
 from ..models import Feature, Ticket
 from ..services import alert_bus, jira_client
@@ -28,10 +28,19 @@ async def _search_similar_features(args: dict[str, Any]) -> dict[str, Any]:
     query = args.get("query", "")
     top_k = int(args.get("top_k", 5))
     org_id = org_id_var.get()
+    self_ticket_key = current_ticket_key_var.get()
     filter_dict = {"organization_id": org_id} if org_id is not None else None
-    matches = get_store().query_text(query, top_k=top_k, filter=filter_dict)
+    # Ask for a couple extra so a self-match dropped below doesn't shrink the
+    # caller's effective top_k.
+    matches = get_store().query_text(query, top_k=top_k + 2, filter=filter_dict)
     out = []
     for m in matches:
+        match_ticket_key = m.metadata.get("ticket_key")
+        # Drop self-matches: an agent acting on ticket X shouldn't see X's own
+        # stored feature in the similarity results. The duplicate agent would
+        # otherwise flag X as a duplicate of itself.
+        if self_ticket_key and match_ticket_key == self_ticket_key:
+            continue
         out.append(
             {
                 "id": m.id,
@@ -42,9 +51,11 @@ async def _search_similar_features(args: dict[str, Any]) -> dict[str, Any]:
                 "product_group": m.metadata.get("product_group"),
                 "status": m.metadata.get("status"),
                 "deprecation_reason": m.metadata.get("deprecation_reason"),
-                "ticket_key": m.metadata.get("ticket_key"),
+                "ticket_key": match_ticket_key,
             }
         )
+        if len(out) >= top_k:
+            break
     return {"matches": out}
 
 
