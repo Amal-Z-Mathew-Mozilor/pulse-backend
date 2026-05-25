@@ -343,7 +343,9 @@ async def _register_with_metadata(
     classifier as `get_or_register`. Returns the new row, or None if a
     concurrent insert beat us to it. Idempotent."""
     project_key = project_key.upper()
-    existing_groups = await _existing_product_groups()
+    # Scope classifier lookups to the caller's org so a project in Beta
+    # doesn't get auto-labeled with a group name that originated in Acme.
+    existing_groups = await _existing_product_groups(organization_id=organization_id)
     product_group = _infer_product_group(project_key, name, existing_groups)
 
     async with session_scope() as db:
@@ -412,43 +414,45 @@ async def _fetch_jira_project_meta(
         return None
 
 
-async def _active_product_groups() -> list[str]:
+async def _active_product_groups(organization_id: int | None = None) -> list[str]:
     """Groups backed by a live Project row — i.e., the originating Jira
-    project still exists. Used to distinguish active vs historical groups."""
+    project still exists. Used to distinguish active vs historical groups.
+
+    When `organization_id` is provided, the result is scoped to that org so
+    we don't leak group names across tenants (e.g. the query agent's prompt
+    should only contain the caller's own groups). When None, returns groups
+    across the whole system — intended ONLY for the classifier's
+    duplicate-label avoidance, never for user-visible output.
+    """
     async with session_scope() as db:
-        rows = (
-            await db.execute(
-                select(Project.product_group).where(Project.product_group != "")
-            )
-        ).all()
+        stmt = select(Project.product_group).where(Project.product_group != "")
+        if organization_id is not None:
+            stmt = stmt.where(Project.organization_id == organization_id)
+        rows = (await db.execute(stmt)).all()
         return sorted({r[0] for r in rows if r[0]})
 
 
-async def _existing_product_groups() -> list[str]:
+async def _existing_product_groups(organization_id: int | None = None) -> list[str]:
     """All product-group labels known to the system — union of the `projects`
     and `features` tables.
 
     Including labels from features (not just live projects) means a group
     whose project was deleted from Jira but whose features were preserved
-    (organizational memory) stays in the known set. Two downstream wins:
+    (organizational memory) stays in the known set.
 
-      - The conversational query agent can still list features for that
-        historical group instead of telling the user it doesn't exist.
-      - The classifier's deterministic match can re-attach a re-created
-        project to its historical label, automatically reconnecting the
-        preserved features.
+    When `organization_id` is provided, results are scoped to that org —
+    critical for the conversational query agent's prompt so we don't reveal
+    other tenants' group names. When None, this returns the global set, used
+    only by the classifier where seeing all labels avoids accidental duplicates.
     """
     async with session_scope() as db:
-        from_projects = (
-            await db.execute(
-                select(Project.product_group).where(Project.product_group != "")
-            )
-        ).all()
-        from_features = (
-            await db.execute(
-                select(Feature.product_group).where(Feature.product_group != "")
-            )
-        ).all()
+        proj_stmt = select(Project.product_group).where(Project.product_group != "")
+        feat_stmt = select(Feature.product_group).where(Feature.product_group != "")
+        if organization_id is not None:
+            proj_stmt = proj_stmt.where(Project.organization_id == organization_id)
+            feat_stmt = feat_stmt.where(Feature.organization_id == organization_id)
+        from_projects = (await db.execute(proj_stmt)).all()
+        from_features = (await db.execute(feat_stmt)).all()
         groups = {r[0] for r in [*from_projects, *from_features] if r[0]}
         return sorted(groups)
 

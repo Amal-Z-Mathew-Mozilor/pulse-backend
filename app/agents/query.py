@@ -103,8 +103,12 @@ TOOLS = [
 
 
 async def _build_system(organization_id: int | None) -> str:
-    all_groups = await _existing_product_groups()
-    active = set(await _active_product_groups())
+    # CRITICAL: scope group lookups to the caller's org. Without this the
+    # prompt would leak product-group names from other tenants into the
+    # chatbot's view ("CookieEat, WebToffee, ..." even when the user's own
+    # workspace has none of those).
+    all_groups = await _existing_product_groups(organization_id=organization_id)
+    active = set(await _active_product_groups(organization_id=organization_id))
     if all_groups:
         groups_str = ", ".join(
             g if g in active else f"{g} (historical)" for g in all_groups
