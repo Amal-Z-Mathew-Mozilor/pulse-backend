@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 
-from ..context import org_id_var
+from ..context import jira_account_id_var, org_id_var
 from ..db import session_scope
 from ..models import AgentRun
 from ..services.claude_client import AgentResult, ToolSpec, run_agent
@@ -18,10 +18,12 @@ async def run_and_log(
     max_iterations: int = 6,
     model: str | None = None,
     organization_id: int | None = None,
+    jira_account_id: int | None = None,
 ) -> AgentResult:
     # Set the org context var so tool handlers can filter by org without
     # needing to thread it through every call site.
-    token = org_id_var.set(organization_id)
+    org_token = org_id_var.set(organization_id)
+    acct_token = jira_account_id_var.set(jira_account_id)
     try:
         async with session_scope() as db:
             log = AgentRun(
@@ -51,4 +53,5 @@ async def run_and_log(
 
         return result
     finally:
-        org_id_var.reset(token)
+        jira_account_id_var.reset(acct_token)
+        org_id_var.reset(org_token)

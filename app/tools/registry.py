@@ -14,7 +14,7 @@ from sqlalchemy import select, update as sqla_update
 import re
 from datetime import datetime, timezone
 
-from ..context import org_id_var
+from ..context import jira_account_id_var, org_id_var
 from ..db import session_scope
 from ..models import Feature, Ticket
 from ..services import alert_bus, jira_client
@@ -255,6 +255,7 @@ create_alert = ToolSpec(
 
 async def _store_feature(args: dict[str, Any]) -> dict[str, Any]:
     org_id = org_id_var.get()
+    jira_account_id = jira_account_id_var.get()
     async with session_scope() as db:
         feature = Feature(
             name=args["name"],
@@ -270,6 +271,7 @@ async def _store_feature(args: dict[str, Any]) -> dict[str, Any]:
             changelog=args.get("changelog"),
             status="active",
             organization_id=org_id,
+            jira_account_id=jira_account_id,
         )
         db.add(feature)
         await db.flush()
@@ -286,6 +288,7 @@ async def _store_feature(args: dict[str, Any]) -> dict[str, Any]:
                 "status": feature.status,
                 "ticket_key": feature.ticket_key,
                 "organization_id": org_id,
+                "jira_account_id": jira_account_id,
             },
         )
         return {"feature_id": feature.id, "ok": True}

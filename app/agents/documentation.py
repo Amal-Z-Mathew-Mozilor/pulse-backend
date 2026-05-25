@@ -31,7 +31,11 @@ TOOLS = [
 ]
 
 
-async def run(ticket_key: str, organization_id: int | None = None):
+async def run(
+    ticket_key: str,
+    organization_id: int | None = None,
+    jira_account_id: int | None = None,
+):
     user_message = (
         f"Ticket {ticket_key} has been marked Done. Read the ticket, distill the work into "
         f"organizational memory, and store the feature record."
@@ -43,4 +47,5 @@ async def run(ticket_key: str, organization_id: int | None = None):
         user_message=user_message,
         tools=TOOLS,
         organization_id=organization_id,
+        jira_account_id=jira_account_id,
     )

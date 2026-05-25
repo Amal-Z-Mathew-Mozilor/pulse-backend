@@ -167,7 +167,11 @@ async def handle_event(event: dict[str, Any]) -> dict[str, Any]:
                     "orchestrator: ticket %s transitioned to Done — dispatching documentation agent",
                     ticket_key,
                 )
-                doc_result = await documentation.run(ticket_key=ticket_key, organization_id=organization_id)
+                doc_result = await documentation.run(
+                    ticket_key=ticket_key,
+                    organization_id=organization_id,
+                    jira_account_id=jira_account_id,
+                )
                 dispatched.append(
                     {"agent": "documentation", "summary": doc_result.text, "tool_calls": len(doc_result.tool_calls)}
                 )
