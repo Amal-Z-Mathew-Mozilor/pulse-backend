@@ -1,8 +1,8 @@
 """Conversational Query Agent.
 
 The user types a natural-language question into the dashboard ("does any other
-team have a payment retry implementation?", "list deprecated WebYes features",
-"is there anything like a cookie scanner that already exists?"). Claude decides:
+team have a payment retry implementation?", "list deprecated features",
+"is there anything like a similar capability that already exists?"). Claude decides:
 
 - Whether it's a similarity question → use `search_similar_features`
 - Whether it's a listing/filter question → use `list_features` with the right filters
@@ -73,10 +73,16 @@ behave like any other group for search and listing. When you mention them in
 an answer, briefly note that the project was retired — gives the asker context.
 
 If the user names a product group that isn't in the list above, say so plainly
-and offer them the list to pick from. Don't silently substitute a close-sounding
-name (CookieEat is NOT CookieYes; WebHi is NOT WebToffee). If it's clearly a
-typo, you can confirm: "Did you mean CookieYes? I see one for that domain but
-not CookieEat — these are tracked as separate spaces." Then wait.
+and offer them the visible list to pick from. Do NOT silently substitute a
+close-sounding name from your knowledge — two groups can have similar-looking
+labels and still be entirely separate spaces. If their input looks like a typo
+of one of the visible groups, confirm gently: "Did you mean <visible-group>?
+That one I do have. The exact name you typed isn't in this workspace's list."
+Then wait for their confirmation before searching.
+
+Never invent example names. If you need to illustrate "a product group" in your
+reply, use placeholders like "your-product-name" or refer back to whatever is
+actually in the visible list — never names you've seen elsewhere or made up.
 
 WHAT NOT TO DO
 --------------
