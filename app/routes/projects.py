@@ -61,14 +61,18 @@ async def list_projects(current_user: User = Depends(get_current_user)):
 
 
 @router.post("/projects/sync")
-async def sync_projects(_admin: User = Depends(get_current_admin)):
-    """Force an immediate sync from Jira across every active account.
+async def sync_projects(admin: User = Depends(get_current_admin)):
+    """Force an immediate sync from Jira for THIS ORG'S Jira accounts only.
     Returns one result row per account, each shaped like
     `{account_id, account_label, synced, new_projects, deleted_projects, error?}`.
     For back-compat with the single-account UI, the response also includes
     top-level aggregate fields (`synced`, `new_projects`, `deleted_projects`)
-    summed across accounts."""
-    results = await project_registry.sync_all_accounts()
+    summed across this org's accounts."""
+    # Scoped to caller's org — Acme's sync button no longer triggers work on
+    # Beta's Jira accounts.
+    results = await project_registry.sync_all_accounts(
+        organization_id=admin.organization_id
+    )
     total_new = [k for r in results for k in r.get("new_projects", [])]
     total_deleted = [k for r in results for k in r.get("deleted_projects", [])]
     first_error = next((r["error"] for r in results if r.get("error")), None)
@@ -85,11 +89,14 @@ async def sync_projects(_admin: User = Depends(get_current_admin)):
 async def override_product_group(
     project_key: str,
     body: ProductGroupUpdate,
-    _admin: User = Depends(get_current_admin),
+    admin: User = Depends(get_current_admin),
 ):
     """Manually override Claude's classification. Sets is_inferred=False so future
     bookkeeping knows the group was set by a human."""
-    row = await project_registry.set_product_group(project_key, body.product_group)
+    # Org-scoped — an admin can only rename projects in their own workspace.
+    row = await project_registry.set_product_group(
+        project_key, body.product_group, organization_id=admin.organization_id
+    )
     if row is None:
         raise HTTPException(404, f"project {project_key} not found — Pulse hasn't received a webhook for it yet")
     labels = await _account_label_map()

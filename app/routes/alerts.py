@@ -251,9 +251,12 @@ async def alert_related_features(
 
     # Multi-account: each Feature carries its `jira_account_id`, and the
     # deep-link must point at THAT account's workspace. We resolve account
-    # base URLs in bulk below — see _build_jira_url.
+    # base URLs in bulk below — scoped to caller's org so we never expose
+    # another tenant's Jira URLs even via metadata maps.
     from ..models import JiraAccount as _JiraAccount
-    account_rows = (await db.execute(select(_JiraAccount))).scalars().all()
+    account_rows = (await db.execute(
+        select(_JiraAccount).where(_JiraAccount.organization_id == current_user.organization_id)
+    )).scalars().all()
     account_label_by_id: dict[int, str] = {a.id: a.label for a in account_rows}
     account_base_by_id: dict[int, str] = {
         a.id: a.base_url.rstrip("/") for a in account_rows if a.base_url

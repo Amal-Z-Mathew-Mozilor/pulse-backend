@@ -71,7 +71,8 @@ search_similar_features = ToolSpec(
 # -------- get_ticket_data --------
 
 async def _get_ticket_data(args: dict[str, Any]) -> dict[str, Any]:
-    ticket = await jira_client.get_ticket_cached(args["ticket_key"])
+    org_id = org_id_var.get()
+    ticket = await jira_client.get_ticket_cached(args["ticket_key"], organization_id=org_id)
     if ticket is None:
         return {"error": f"ticket {args['ticket_key']} not found in local cache"}
     return ticket
@@ -93,18 +94,45 @@ get_ticket_data = ToolSpec(
 
 async def _add_jira_comment(args: dict[str, Any]) -> dict[str, Any]:
     """Post a comment to real Jira if configured, and also append to the local
-    Ticket cache so the dashboard reflects what was sent."""
+    Ticket cache so the dashboard reflects what was sent.
+
+    The Jira account to post to is resolved from the ticket itself — never
+    via a global default. If we can't find the ticket in this org's cache,
+    refuse: posting Acme's duplicate-warning to Beta's Jira workspace would
+    be a cross-tenant leak via the action layer."""
     import logging
+    from sqlalchemy import select as _select
+    from ..context import org_id_var
+    from ..db import session_scope as _ss
+    from ..models import JiraAccount as _JiraAccount, Ticket as _Ticket
     log = logging.getLogger(__name__)
 
     ticket_key = args["ticket_key"]
     body = args["body"]
+    org_id = org_id_var.get()
 
-    client = await jira_client.get_jira_client()
+    # Look up the ticket in OUR org's cache to resolve which Jira account
+    # owns it. This is the safety net — we never post to a Jira workspace
+    # that isn't in the caller's org.
+    account = None
+    async with _ss() as db:
+        stmt = _select(_Ticket).where(_Ticket.key == ticket_key)
+        if org_id is not None:
+            stmt = stmt.where(_Ticket.organization_id == org_id)
+        ticket = (await db.execute(stmt)).scalar_one_or_none()
+        if ticket is not None and ticket.jira_account_id is not None:
+            account = (await db.execute(
+                _select(_JiraAccount).where(_JiraAccount.id == ticket.jira_account_id)
+            )).scalar_one_or_none()
+
+    client = await jira_client.get_jira_client(account) if account else None
     jira_result: dict[str, Any] | str
     if client is None:
-        jira_result = "jira_not_configured"
-        log.warning("Jira not configured — comment to %s would have been: %s", ticket_key, body[:120])
+        jira_result = "jira_not_configured_for_org"
+        log.warning(
+            "No Jira account resolvable for ticket %s in org_id=%s — comment skipped: %s",
+            ticket_key, org_id, body[:120],
+        )
         ok = False
     else:
         try:
@@ -116,7 +144,7 @@ async def _add_jira_comment(args: dict[str, Any]) -> dict[str, Any]:
             ok = False
 
     # Always reflect in the local cache so the UI shows what the agent attempted.
-    await jira_client.append_local_comment(ticket_key, body, author="pulse-bot")
+    await jira_client.append_local_comment(ticket_key, body, author="pulse-bot", organization_id=org_id)
     return {"ok": ok, "jira_result": jira_result, "ticket_key": ticket_key}
 
 
@@ -400,10 +428,16 @@ async def _mark_feature_deprecated(args: dict[str, Any]) -> dict[str, Any]:
     feature_id = int(args["feature_id"])
     reason = args["reason"]
     source_pg = (args.get("source_product_group") or "").strip()
+    org_id = org_id_var.get()
 
     async with session_scope() as db:
         feature = await db.get(Feature, feature_id)
         if feature is None:
+            return {"error": f"feature {feature_id} not found"}
+        # Defense in depth — the agent should only ever see feature_ids from
+        # search_similar_features (which is org-scoped), but if a bad caller
+        # passes a feature_id from another tenant, refuse the deprecation.
+        if org_id is not None and feature.organization_id != org_id:
             return {"error": f"feature {feature_id} not found"}
 
         # ------------------------------------------------------------------
@@ -536,6 +570,7 @@ async def _notify_cross_product(args: dict[str, Any]) -> dict[str, Any]:
     related: list[dict[str, Any]] = []
     target_pgs: set[str] = set()
     target_teams: set[str] = set()
+    org_id = org_id_var.get()
 
     async with session_scope() as db:
         for r in related_raw:
@@ -550,7 +585,12 @@ async def _notify_cross_product(args: dict[str, Any]) -> dict[str, Any]:
                 entry["similarity_score"] = float(score)
             related.append(entry)
 
-            row = (await db.execute(select(Feature).where(Feature.ticket_key == tk))).scalar_one_or_none()
+            # Org-scoped lookup — only resolve ticket_keys to features inside
+            # the caller's tenant.
+            stmt = select(Feature).where(Feature.ticket_key == tk)
+            if org_id is not None:
+                stmt = stmt.where(Feature.organization_id == org_id)
+            row = (await db.execute(stmt)).scalar_one_or_none()
             if row is not None:
                 if row.product_group:
                     target_pgs.add(row.product_group)
@@ -683,10 +723,12 @@ async def _record_deprecation_preview(args: dict[str, Any]) -> dict[str, Any]:
         "cross_product": _coerce_candidates(args.get("cross_product_candidates")),
     }
 
+    org_id = org_id_var.get()
     async with session_scope() as db:
-        row = (
-            await db.execute(select(Ticket).where(Ticket.key == ticket_key))
-        ).scalar_one_or_none()
+        stmt = select(Ticket).where(Ticket.key == ticket_key)
+        if org_id is not None:
+            stmt = stmt.where(Ticket.organization_id == org_id)
+        row = (await db.execute(stmt)).scalar_one_or_none()
         if row is None:
             return {"error": f"ticket {ticket_key} not in local cache"}
         row.last_deprecation_preview = payload
@@ -843,10 +885,12 @@ async def _find_explicitly_mentioned_candidates(args: dict[str, Any]) -> dict[st
     if not candidates:
         return {"mentioned": [], "not_mentioned": []}
 
+    org_id = org_id_var.get()
     async with session_scope() as db:
-        row = (
-            await db.execute(select(Ticket).where(Ticket.key == ticket_key))
-        ).scalar_one_or_none()
+        stmt = select(Ticket).where(Ticket.key == ticket_key)
+        if org_id is not None:
+            stmt = stmt.where(Ticket.organization_id == org_id)
+        row = (await db.execute(stmt)).scalar_one_or_none()
         if row is None:
             return {"error": f"ticket {ticket_key} not in local cache"}
         haystack = f"{row.summary or ''}\n{row.description or ''}".upper()

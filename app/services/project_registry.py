@@ -91,18 +91,27 @@ async def list_projects(organization_id: int | None = None) -> list[Project]:
         return list(rows)
 
 
-async def set_product_group(project_key: str, product_group: str) -> Project | None:
+async def set_product_group(
+    project_key: str,
+    product_group: str,
+    organization_id: int | None = None,
+) -> Project | None:
     """Manual override — flips `is_inferred` to False and cascades the change
     to every Ticket and Feature row under this project so the dashboard,
-    semantic search, and downstream agents all see the corrected label."""
+    semantic search, and downstream agents all see the corrected label.
+
+    When `organization_id` is provided, the lookup is scoped to that org so an
+    admin in Acme can't accidentally rename a project label that belongs to Beta.
+    """
     project_key = project_key.upper()
     new_pg = (product_group or "").strip()
     if not new_pg:
         return None
     async with session_scope() as db:
-        row = (
-            await db.execute(select(Project).where(Project.key == project_key))
-        ).scalar_one_or_none()
+        stmt = select(Project).where(Project.key == project_key)
+        if organization_id is not None:
+            stmt = stmt.where(Project.organization_id == organization_id)
+        row = (await db.execute(stmt)).scalar_one_or_none()
         if row is None:
             return None
         old_pg = row.product_group
@@ -241,13 +250,18 @@ async def sync_from_jira(account: "JiraAccount | None" = None) -> dict[str, Any]
     }
 
 
-async def sync_all_accounts() -> list[dict[str, Any]]:
+async def sync_all_accounts(organization_id: int | None = None) -> list[dict[str, Any]]:
     """Run `sync_from_jira` for every active account. Each account is synced
     sequentially — projects are isolated per account, so a failure in one
-    doesn't poison the others."""
+    doesn't poison the others.
+
+    When `organization_id` is provided, only that org's Jira accounts are
+    synced — critical for user-triggered sync (admin click) so Acme's button
+    doesn't trigger work on Beta's behalf. The background boot/poll loop
+    passes None to sync every org's accounts."""
     from .jira_accounts import list_accounts
 
-    accounts = await list_accounts(active_only=True)
+    accounts = await list_accounts(active_only=True, organization_id=organization_id)
     results: list[dict[str, Any]] = []
     for acc in accounts:
         try:

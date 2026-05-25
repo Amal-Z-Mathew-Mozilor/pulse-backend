@@ -8,6 +8,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from .config import get_settings
 from .db import init_db
 from .dependencies import get_current_user
+from .models import User
 from .routes import alerts, features, jira_accounts, projects, search, webhooks
 from .routes import auth as auth_router
 from .services.jira_client import close_jira_client
@@ -178,16 +179,35 @@ app.add_middleware(
 )
 
 
-async def _status_payload():
+async def _public_status_payload():
+    """Unauthenticated minimum status — only global capability flags, never
+    tenant data. Used by the `/` health check and CI probes."""
     from .services.embeddings import is_local_model_available
-    from .services.jira_accounts import list_accounts
-    from .services.vector_store import is_pinecone_active
 
     queue_state = getattr(app.state, "queue", None)
     queue_mode = "procrastinate" if queue_state is not None else "background_tasks"
 
-    accounts = await list_accounts(active_only=False)
-    # Surface a compact per-account view — never the credentials themselves.
+    return {
+        "name": "pulse",
+        "anthropic_configured": settings.has_anthropic,
+        "local_embeddings_available": is_local_model_available(),
+        "vector_store": "pgvector",
+        "queue_mode": queue_mode,
+        "model": settings.claude_model,
+    }
+
+
+async def _status_payload_for(user):
+    """Authenticated, org-scoped status. Returns the caller's own Jira accounts
+    only — never another tenant's labels, base_urls, or secrets."""
+    from .services.jira_accounts import list_accounts
+
+    base = await _public_status_payload()
+
+    # Org-scoped Jira account view — only the caller's accounts.
+    accounts = await list_accounts(
+        active_only=False, organization_id=user.organization_id
+    )
     accounts_view = [
         {
             "id": a.id,
@@ -204,41 +224,33 @@ async def _status_payload():
     if primary_base_url is None and accounts:
         primary_base_url = accounts[0].base_url
 
-    return {
-        "name": "pulse",
-        "anthropic_configured": settings.has_anthropic,
-        "local_embeddings_available": is_local_model_available(),
-        "vector_store": "pgvector",
+    base.update({
         # Legacy single-account fields — kept so the frontend status banner keeps working.
         "jira_configured": active_count > 0,
         "jira_webhook_secured": any(a.webhook_secret for a in accounts if a.is_active),
         "jira_base_url": primary_base_url,
-        # Multi-account view.
+        # Multi-account view, scoped to this org.
         "jira_accounts": accounts_view,
         "jira_account_count": active_count,
-        # Public-facing base URL of this Pulse backend — frontend uses this to
-        # render the full per-account webhook URL. Empty if PULSE_PUBLIC_BASE_URL
-        # isn't set in .env; the UI degrades to showing just the path.
+        # Public-facing base URL of THIS Pulse backend — frontend uses it to
+        # render the full per-account webhook URL.
         "public_base_url": settings.pulse_public_base_url.rstrip("/") or None,
-        # Which dispatch backend is wired up — "arq" means durable + retryable
-        # via Redis; "background_tasks" means fire-and-forget within this
-        # uvicorn process (dev mode).
-        "queue_mode": queue_mode,
-        "model": settings.claude_model,
-    }
+    })
+    return base
 
 
 @app.get("/")
 async def root():
-    """Kept for direct backend checks (curl etc.) — same payload as /api/status."""
-    return await _status_payload()
+    """Public health check — global capabilities only, no tenant data."""
+    return await _public_status_payload()
 
 
 @app.get("/api/status")
-async def api_status():
-    """Same payload as `/`, exposed under /api/* so the Vite dev-server proxy
-    picks it up — avoids cross-origin CORS issues from the React frontend."""
-    return await _status_payload()
+async def api_status(current_user: User = Depends(get_current_user)):
+    """Org-scoped status — returns the caller's own workspace info plus the
+    global capability flags. Auth-required so we don't leak Jira-account
+    labels/base_urls across tenants."""
+    return await _status_payload_for(current_user)
 
 
 # Auth routes are public — no JWT dependency

@@ -175,10 +175,19 @@ def text_to_adf(text: str) -> dict[str, Any]:
 # The orchestrator writes received tickets into the DB so tools/agents can read them
 # without hitting Jira on every call. These helpers replace the old jira_mock module.
 
-async def get_ticket_cached(ticket_key: str) -> dict[str, Any] | None:
-    """Read the locally-cached copy of a ticket. Returns None if we haven't seen it yet."""
+async def get_ticket_cached(
+    ticket_key: str,
+    organization_id: int | None = None,
+) -> dict[str, Any] | None:
+    """Read the locally-cached copy of a ticket. Returns None if we haven't
+    seen it yet — OR if the ticket belongs to a different organization than
+    `organization_id`. Scoping is critical because the same Jira ticket key
+    can exist in two unrelated workspaces."""
     async with session_scope() as db:
-        row = (await db.execute(select(Ticket).where(Ticket.key == ticket_key))).scalar_one_or_none()
+        stmt = select(Ticket).where(Ticket.key == ticket_key)
+        if organization_id is not None:
+            stmt = stmt.where(Ticket.organization_id == organization_id)
+        row = (await db.execute(stmt)).scalar_one_or_none()
         if not row:
             return None
         return {
@@ -219,13 +228,22 @@ async def upsert_ticket(payload: dict[str, Any]) -> Ticket:
         return row
 
 
-async def append_local_comment(ticket_key: str, body: str, author: str = "pulse-bot") -> bool:
-    """Append a comment record to our local Ticket cache (separate from posting to Jira).
-    Used so the dashboard reflects what was sent."""
+async def append_local_comment(
+    ticket_key: str,
+    body: str,
+    author: str = "pulse-bot",
+    organization_id: int | None = None,
+) -> bool:
+    """Append a comment record to our local Ticket cache. Scoped to org so
+    we don't accidentally append to another tenant's cached ticket that
+    happens to share a ticket key (e.g. both workspaces have "WEBT-1")."""
     from datetime import datetime, timezone
 
     async with session_scope() as db:
-        row = (await db.execute(select(Ticket).where(Ticket.key == ticket_key))).scalar_one_or_none()
+        stmt = select(Ticket).where(Ticket.key == ticket_key)
+        if organization_id is not None:
+            stmt = stmt.where(Ticket.organization_id == organization_id)
+        row = (await db.execute(stmt)).scalar_one_or_none()
         if not row:
             return False
         comment = {
