@@ -134,4 +134,21 @@ async def test_jira_account(
         raise HTTPException(404, f"account {account_id} not found")
 
     result = await svc.test_connection(account_id)
+
+    # Persist the test outcome on the account row so the UI's health pill
+    # reflects the most-recent check, even between background syncs.
+    from ..services.project_registry import _record_sync_status, _classify_http_error
+    sc = result.get("status_code")
+    if result.get("ok"):
+        await _record_sync_status(account_id, "ok", error=None)
+    elif isinstance(sc, int):
+        await _record_sync_status(
+            account_id, _classify_http_error(sc),
+            error=result.get("message") or f"Jira returned HTTP {sc}",
+        )
+    else:
+        await _record_sync_status(
+            account_id, "unreachable", error=result.get("message") or "Connection failed"
+        )
+
     return JiraAccountTestResult(**result)

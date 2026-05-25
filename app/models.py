@@ -95,6 +95,18 @@ class JiraAccount(Base):
     organization_id: Mapped[int | None] = mapped_column(
         ForeignKey("organizations.id", ondelete="SET NULL"), nullable=True, index=True
     )
+    # Persistent health snapshot updated by every sync attempt — so the UI can
+    # show "Connected" / "Token expired" / "Cannot reach Jira" without having
+    # to call /test on page load.
+    #   'never'       — no sync has run yet
+    #   'ok'          — last sync succeeded
+    #   'auth_failed' — 401/403 from Jira; token likely expired
+    #   'not_found'   — 404; base URL is wrong
+    #   'unreachable' — network/timeout/other transient
+    #   'error'       — anything else
+    last_sync_status: Mapped[str] = mapped_column(String(16), default="never")
+    last_sync_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    last_sync_error: Mapped[str | None] = mapped_column(Text, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now, onupdate=_now)
 

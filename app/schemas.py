@@ -154,6 +154,12 @@ class JiraAccountOut(BaseModel):
     is_default: bool
     has_token: bool
     has_webhook_secret: bool
+    # Persistent health snapshot — populated by sync_from_jira on every run.
+    # Frontend uses last_sync_status to show a 'Connected' / 'Token expired'
+    # / 'Cannot reach Jira' pill on each row.
+    last_sync_status: str = "never"
+    last_sync_at: datetime | None = None
+    last_sync_error: str | None = None
     created_at: datetime
     updated_at: datetime
 

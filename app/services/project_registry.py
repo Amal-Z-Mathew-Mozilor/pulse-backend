@@ -128,6 +128,38 @@ async def set_product_group(
         return row
 
 
+async def _record_sync_status(
+    account_id: int,
+    status: str,
+    error: str | None = None,
+) -> None:
+    """Persist the most-recent sync outcome on the JiraAccount row so the UI
+    can show a 'Connected' / 'Token expired' / 'Cannot reach Jira' pill without
+    having to call /test on every page load."""
+    from datetime import datetime, timezone
+    from sqlalchemy import update as _sqla_update
+    async with session_scope() as db:
+        await db.execute(
+            _sqla_update(JiraAccount)
+            .where(JiraAccount.id == account_id)
+            .values(
+                last_sync_status=status,
+                last_sync_at=datetime.now(timezone.utc),
+                last_sync_error=error,
+            )
+        )
+
+
+def _classify_http_error(status_code: int) -> str:
+    if status_code in (401, 403):
+        return "auth_failed"
+    if status_code == 404:
+        return "not_found"
+    if 500 <= status_code < 600:
+        return "unreachable"
+    return "error"
+
+
 async def sync_from_jira(account: "JiraAccount | None" = None) -> dict[str, Any]:
     """Fetch every project visible from the given Jira account. Register any
     that Pulse hasn't seen yet AND delete any Pulse rows that no longer exist
@@ -186,6 +218,10 @@ async def sync_from_jira(account: "JiraAccount | None" = None) -> dict[str, Any]
                         "project sync [%s]: Jira returned %d for /project/search",
                         account.label, r.status_code,
                     )
+                    status = _classify_http_error(r.status_code)
+                    await _record_sync_status(
+                        account.id, status, error=f"Jira returned HTTP {r.status_code}"
+                    )
                     return {
                         "account_id": account.id,
                         "account_label": account.label,
@@ -193,6 +229,7 @@ async def sync_from_jira(account: "JiraAccount | None" = None) -> dict[str, Any]
                         "new_projects": new_projects,
                         "deleted_projects": [],
                         "error": f"jira_http_{r.status_code}",
+                        "status": status,
                     }
                 payload = r.json()
                 values = payload.get("values", []) or []
@@ -218,6 +255,7 @@ async def sync_from_jira(account: "JiraAccount | None" = None) -> dict[str, Any]
                 start_at += len(values)
     except Exception as exc:
         log.warning("project sync [%s] failed: %s", account.label, exc)
+        await _record_sync_status(account.id, "unreachable", error=str(exc)[:300])
         return {
             "account_id": account.id,
             "account_label": account.label,
@@ -225,6 +263,7 @@ async def sync_from_jira(account: "JiraAccount | None" = None) -> dict[str, Any]
             "new_projects": new_projects,
             "deleted_projects": [],
             "error": str(exc)[:200],
+            "status": "unreachable",
         }
 
     # Full Jira traversal succeeded for this account — anything in Pulse but
@@ -241,12 +280,15 @@ async def sync_from_jira(account: "JiraAccount | None" = None) -> dict[str, Any]
             "project sync [%s]: %d new, %d deleted (new=%s, deleted=%s)",
             account.label, len(new_projects), len(deleted_projects), new_projects, deleted_projects,
         )
+    # Success path — record 'ok' so the UI's per-account health pill flips green.
+    await _record_sync_status(account.id, "ok", error=None)
     return {
         "account_id": account.id,
         "account_label": account.label,
         "synced": len(new_projects),
         "new_projects": new_projects,
         "deleted_projects": deleted_projects,
+        "status": "ok",
     }
 
 
