@@ -103,6 +103,35 @@ async def update_jira_account(
         raise HTTPException(409, str(exc))
     if row is None:
         raise HTTPException(404, f"account {account_id} not found")
+
+    # Token rotation: probe Atlassian immediately so the health pill flips
+    # in the same response cycle rather than waiting for the next sync.
+    # Failures don't undo the update — we just record the failure on the
+    # row so the UI surfaces it.
+    if body.api_token:
+        from ..services.project_registry import (
+            _classify_http_error,
+            _record_sync_status,
+        )
+        test_result = await svc.test_connection(account_id)
+        sc = test_result.get("status_code")
+        if test_result.get("ok"):
+            await _record_sync_status(account_id, "ok", error=None)
+        elif isinstance(sc, int):
+            await _record_sync_status(
+                account_id, _classify_http_error(sc),
+                error=test_result.get("message") or f"Jira returned HTTP {sc}",
+            )
+        else:
+            await _record_sync_status(
+                account_id, "unreachable",
+                error=test_result.get("message") or "Connection failed",
+            )
+        # Re-read so the response carries the freshly stamped sync fields.
+        refreshed = await svc.get_account(account_id)
+        if refreshed is not None:
+            row = refreshed
+
     return _to_out(row)
 
 

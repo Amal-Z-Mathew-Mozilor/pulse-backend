@@ -1,7 +1,7 @@
 from datetime import datetime
 from typing import Any
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 
 class OrganizationOut(BaseModel):
@@ -164,6 +164,27 @@ class JiraAccountOut(BaseModel):
     updated_at: datetime
 
 
+def _validate_api_token(value: str | None) -> str | None:
+    """An Atlassian API token is a single opaque string with no whitespace. The
+    paste path from Atlassian's UI is forgiving enough that users routinely
+    grab adjacent text by accident (env-var names, button labels, etc.) and
+    the resulting auth header then fails with a confusing 401. Reject obvious
+    paste mistakes here rather than letting Atlassian explain it later."""
+    if value is None:
+        return None
+    stripped = value.strip()
+    if not stripped:
+        # Empty/whitespace-only — defer to the min_length=1 check.
+        return stripped
+    if any(ch.isspace() for ch in stripped):
+        raise ValueError(
+            "API token must not contain spaces or line breaks — make sure you "
+            "pasted only the token, not surrounding text. Use Atlassian's Copy "
+            "button on the token modal."
+        )
+    return stripped
+
+
 class JiraAccountCreate(BaseModel):
     label: str = Field(..., min_length=1, max_length=128)
     base_url: str = Field(..., min_length=1)
@@ -172,6 +193,11 @@ class JiraAccountCreate(BaseModel):
     webhook_secret: str = Field(default="")
     is_active: bool = True
     is_default: bool = False
+
+    @field_validator("api_token")
+    @classmethod
+    def _strip_and_validate_token(cls, v: str) -> str:
+        return _validate_api_token(v) or ""
 
 
 class JiraAccountUpdate(BaseModel):
@@ -184,6 +210,11 @@ class JiraAccountUpdate(BaseModel):
     webhook_secret: str | None = None
     is_active: bool | None = None
     is_default: bool | None = None
+
+    @field_validator("api_token")
+    @classmethod
+    def _strip_and_validate_token(cls, v: str | None) -> str | None:
+        return _validate_api_token(v)
 
 
 class JiraAccountTestResult(BaseModel):
