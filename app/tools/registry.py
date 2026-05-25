@@ -256,7 +256,25 @@ create_alert = ToolSpec(
 async def _store_feature(args: dict[str, Any]) -> dict[str, Any]:
     org_id = org_id_var.get()
     jira_account_id = jira_account_id_var.get()
+    ticket_key = args.get("ticket_key")
     async with session_scope() as db:
+        # Idempotency on (org, ticket_key): the orchestrator already skips the
+        # documentation agent when a feature exists, but defense in depth here
+        # protects any future caller (manual seed, replay tools, alternate
+        # agents) from creating dupes for the same Jira ticket.
+        if ticket_key:
+            existing_stmt = select(Feature).where(Feature.ticket_key == ticket_key)
+            if org_id is not None:
+                existing_stmt = existing_stmt.where(Feature.organization_id == org_id)
+            existing = (await db.execute(existing_stmt)).scalars().first()
+            if existing is not None:
+                return {
+                    "feature_id": existing.id,
+                    "ok": True,
+                    "deduped": True,
+                    "reason": "feature already exists for this ticket_key",
+                }
+
         feature = Feature(
             name=args["name"],
             summary=args["summary"],
