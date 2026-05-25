@@ -64,6 +64,10 @@ You have three tools and you should pick the right one for the question:
 You can chain tools. A common pattern: list to narrow down, then get_feature
 to fetch the deprecation reason.
 
+WORKSPACE STATE
+---------------
+{workspace_state}
+
 GROUND TRUTH
 ------------
 Product groups currently visible to you: {product_groups}.
@@ -121,7 +125,85 @@ async def _build_system(organization_id: int | None) -> str:
         )
     else:
         groups_str = "(none registered yet)"
-    return SYSTEM_TEMPLATE.format(product_groups=groups_str)
+
+    # Tell the model precisely what state this workspace is in. Empty workspace
+    # = nothing connected = every "search for X" answer should explain WHY
+    # the system has nothing, not just shrug "I don't see it."
+    workspace_state = await _workspace_state(organization_id)
+
+    return SYSTEM_TEMPLATE.format(
+        product_groups=groups_str,
+        workspace_state=workspace_state,
+    )
+
+
+async def _workspace_state(organization_id: int | None) -> str:
+    """Return a paragraph describing what's connected to this workspace, so
+    the model can answer honestly when the answer is 'nothing yet'."""
+    from sqlalchemy import select, func
+    from ..db import session_scope
+    from ..models import Feature, JiraAccount
+
+    if organization_id is None:
+        return (
+            "No specific workspace context — answer generically based on what the "
+            "tools return."
+        )
+
+    async with session_scope() as db:
+        jira_count = (await db.execute(
+            select(func.count()).select_from(JiraAccount).where(
+                JiraAccount.organization_id == organization_id,
+                JiraAccount.is_active.is_(True),
+            )
+        )).scalar() or 0
+        feature_count = (await db.execute(
+            select(func.count()).select_from(Feature).where(
+                Feature.organization_id == organization_id,
+            )
+        )).scalar() or 0
+
+    if jira_count == 0 and feature_count == 0:
+        return (
+            "⚠️ This workspace is EMPTY. No Jira account is connected and no "
+            "features have been tracked yet.\n\n"
+            "When the user asks about any feature, team, or product group, do NOT "
+            "just say 'I can't find it' as if it's a search miss — that's "
+            "misleading. The correct, honest answer is:\n\n"
+            "  'Heads up — there's no Jira workspace connected to your Pulse "
+            "  account yet, so I don't have any features to search through. Once "
+            "  an admin adds a Jira account in the Jira Accounts tab, tickets "
+            "  start flowing in automatically and I'll be able to help find "
+            "  things. Want me to walk you through the next step?'\n\n"
+            "Mention this state in EVERY answer until at least one Jira account "
+            "or feature exists. Don't run searches; they'll all be empty. Don't "
+            "speculate about what 'might exist under a different name' — there's "
+            "nothing here to look up."
+        )
+    elif jira_count == 0:
+        return (
+            f"This workspace has {feature_count} feature(s) in organizational "
+            "memory but no active Jira account connected. The features here are "
+            "from a previously-connected workspace. New tickets won't flow in "
+            "until an admin reconnects a Jira account. You can still answer "
+            "questions about existing features, but mention that new work won't "
+            "be picked up until Jira is reconnected."
+        )
+    elif feature_count == 0:
+        return (
+            f"This workspace has {jira_count} Jira account(s) connected but no "
+            "features tracked yet. Either tickets haven't started flowing in or "
+            "no tickets have reached 'Done' status (which is what triggers feature "
+            "extraction). Tell the user honestly when they ask about a feature: "
+            "'Your Jira workspace is connected but I haven't seen any features "
+            "captured yet — features appear once tickets are marked Done.'"
+        )
+    else:
+        return (
+            f"This workspace is set up: {jira_count} Jira account(s) connected, "
+            f"{feature_count} feature(s) in organizational memory. Search and "
+            "list freely."
+        )
 
 
 async def run(query: str, organization_id: int | None = None):
