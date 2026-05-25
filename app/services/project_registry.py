@@ -202,6 +202,33 @@ async def sync_from_jira(account: "JiraAccount | None" = None) -> dict[str, Any]
             timeout=20.0,
             headers={"Accept": "application/json"},
         ) as h:
+            # AUTH PROBE: /project/search returns 200-with-empty-list when the
+            # token is invalid — Atlassian treats unauth'd callers as "users
+            # who can see no projects." Without an explicit auth check, we'd
+            # see 200, delete every project we have, and report "Up to date."
+            #
+            # /rest/api/3/myself correctly returns 401 on invalid credentials,
+            # so use it as the gate.
+            me = await h.get(f"{account.base_url.rstrip('/')}/rest/api/3/myself")
+            if me.status_code != 200:
+                log.warning(
+                    "project sync [%s]: auth probe failed — Jira /myself returned %d",
+                    account.label, me.status_code,
+                )
+                status = _classify_http_error(me.status_code)
+                await _record_sync_status(
+                    account.id, status, error=f"Jira /myself returned HTTP {me.status_code}"
+                )
+                return {
+                    "account_id": account.id,
+                    "account_label": account.label,
+                    "synced": 0,
+                    "new_projects": [],
+                    "deleted_projects": [],
+                    "error": f"jira_auth_{me.status_code}",
+                    "status": status,
+                }
+
             start_at = 0
             page_size = 50
             while True:
