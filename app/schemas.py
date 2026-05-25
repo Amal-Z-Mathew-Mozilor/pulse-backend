@@ -174,8 +174,9 @@ def _validate_api_token(value: str | None) -> str | None:
         return None
     stripped = value.strip()
     if not stripped:
-        # Empty/whitespace-only — defer to the min_length=1 check.
-        return stripped
+        # All-whitespace input: min_length=1 sees 3 chars and passes, so we
+        # need our own empty-after-strip check or the row silently no-ops.
+        raise ValueError("API token cannot be empty.")
     if any(ch.isspace() for ch in stripped):
         raise ValueError(
             "API token must not contain spaces or line breaks — make sure you "
