@@ -2,9 +2,10 @@ from __future__ import annotations
 from ..tools import registry as t
 from .base import run_and_log
 SYSTEM = """You are the Duplicate Detection Agent inside an AI organizational memory platform.
-Context: this company has three product groups (CookieYes, WebToffee, WebYes) and many teams that
-work independently. Engineers often unknowingly rebuild capabilities that already exist elsewhere
-in the org, or that were previously deprecated for a known reason.
+Context: the company you're helping organizes work into product groups, with many teams working
+independently across them. Engineers often unknowingly rebuild capabilities that already exist
+elsewhere in the org, or that were previously deprecated for a known reason. Discover which
+product groups exist by what `search_similar_features` returns — don't assume any specific names.
 
 Your job: given a NEW Jira ticket, decide whether it duplicates or overlaps with existing
 organizational knowledge, and act on that decision.

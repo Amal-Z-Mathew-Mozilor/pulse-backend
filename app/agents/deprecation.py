@@ -72,10 +72,10 @@ Call add_jira_comment on the source ticket. Format (markdown):
   deprecated yet** — that happens when this ticket is marked Done.
 
   **When marked Done, Pulse will deprecate:**
-  - WEBT-7 — GraphQL Selective Field Query Layer (similarity 94%)
+  - <TICKET-KEY> — <Feature name from the search results> (similarity <score>%)
 
   **Cross-product features Pulse will notify (no automatic action):**
-  - COOK-6 — CookieYes GraphQL API (similarity 89%)
+  - <TICKET-KEY> — <Feature name from a different product group> (similarity <score>%)
 
   Reviewers: if the scope looks wrong, edit this ticket before moving
   it to Done.
