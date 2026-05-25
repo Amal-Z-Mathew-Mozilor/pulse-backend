@@ -258,22 +258,31 @@ async def _store_feature(args: dict[str, Any]) -> dict[str, Any]:
     jira_account_id = jira_account_id_var.get()
     ticket_key = args.get("ticket_key")
     async with session_scope() as db:
-        # Idempotency on (org, ticket_key): the orchestrator already skips the
-        # documentation agent when a feature exists, but defense in depth here
-        # protects any future caller (manual seed, replay tools, alternate
-        # agents) from creating dupes for the same Jira ticket.
+        # Newer-wins dedup on (org, ticket_key). When a ticket gets re-Done
+        # (Done → not-Done → Done) the documentation agent runs again and
+        # writes the latest take. We delete any prior Feature rows for the
+        # same (org, ticket_key) — and their vector embeddings — so the
+        # changelog shows ONE row per ticket and search doesn't surface the
+        # stale description.
+        replaced_ids: list[int] = []
         if ticket_key:
             existing_stmt = select(Feature).where(Feature.ticket_key == ticket_key)
             if org_id is not None:
                 existing_stmt = existing_stmt.where(Feature.organization_id == org_id)
-            existing = (await db.execute(existing_stmt)).scalars().first()
-            if existing is not None:
-                return {
-                    "feature_id": existing.id,
-                    "ok": True,
-                    "deduped": True,
-                    "reason": "feature already exists for this ticket_key",
-                }
+            existing_rows = (await db.execute(existing_stmt)).scalars().all()
+            for old in existing_rows:
+                replaced_ids.append(old.id)
+                try:
+                    get_store().delete(f"feature:{old.id}")
+                except Exception:
+                    # PgVectorStore stores embeddings in features.embedding so
+                    # the row delete cleans up the vector too. This call is
+                    # belt-and-suspenders for non-pgvector backends; never
+                    # fail the replace on a vector-side cleanup error.
+                    pass
+                await db.delete(old)
+            if replaced_ids:
+                await db.flush()
 
         feature = Feature(
             name=args["name"],
@@ -309,7 +318,10 @@ async def _store_feature(args: dict[str, Any]) -> dict[str, Any]:
                 "jira_account_id": jira_account_id,
             },
         )
-        return {"feature_id": feature.id, "ok": True}
+        result: dict[str, Any] = {"feature_id": feature.id, "ok": True}
+        if replaced_ids:
+            result["replaced_feature_ids"] = replaced_ids
+        return result
 
 
 store_feature = ToolSpec(

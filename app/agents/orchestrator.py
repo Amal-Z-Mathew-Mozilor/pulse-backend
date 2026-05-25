@@ -21,7 +21,7 @@ from typing import Any
 from sqlalchemy import select
 
 from ..db import session_scope
-from ..models import Feature, Ticket
+from ..models import Ticket
 from ..services import jira_client, project_registry
 from ..services.jira_event import (
     EVENT_CREATED,
@@ -44,20 +44,6 @@ async def _load_last_preview(ticket_key: str) -> dict[str, Any] | None:
         if row is None:
             return None
         return row.last_deprecation_preview or None
-
-
-async def _feature_already_documented(
-    ticket_key: str, organization_id: int | None
-) -> Feature | None:
-    """Return an existing Feature for (org, ticket_key) if one's there. Used to
-    short-circuit the documentation agent when a ticket gets flipped Done →
-    not-Done → Done again — without this we'd write a second feature row for
-    the same ticket on every Done transition."""
-    async with session_scope() as db:
-        stmt = select(Feature).where(Feature.ticket_key == ticket_key)
-        if organization_id is not None:
-            stmt = stmt.where(Feature.organization_id == organization_id)
-        return (await db.execute(stmt)).scalars().first()
 
 
 async def handle_event(event: dict[str, Any]) -> dict[str, Any]:
@@ -177,38 +163,24 @@ async def handle_event(event: dict[str, Any]) -> dict[str, Any]:
             )
 
             if not is_dep:
-                # Skip re-documentation when a feature already exists for this
-                # ticket. Happens when a ticket gets flipped Done → not-Done →
-                # Done as part of QA, or when Jira re-fires a webhook. Without
-                # this guard the documentation agent runs a second time and
-                # creates a duplicate feature row.
-                existing = await _feature_already_documented(ticket_key, organization_id)
-                if existing is not None:
-                    log.info(
-                        "orchestrator: ticket %s already has feature id=%d — skipping documentation agent",
-                        ticket_key, existing.id,
-                    )
-                    dispatched.append(
-                        {
-                            "agent": "documentation",
-                            "skipped": True,
-                            "reason": "already_documented",
-                            "feature_id": existing.id,
-                        }
-                    )
-                else:
-                    log.info(
-                        "orchestrator: ticket %s transitioned to Done — dispatching documentation agent",
-                        ticket_key,
-                    )
-                    doc_result = await documentation.run(
-                        ticket_key=ticket_key,
-                        organization_id=organization_id,
-                        jira_account_id=jira_account_id,
-                    )
-                    dispatched.append(
-                        {"agent": "documentation", "summary": doc_result.text, "tool_calls": len(doc_result.tool_calls)}
-                    )
+                # Always dispatch the documentation agent on Done. If a
+                # feature already exists for this ticket (ticket flipped
+                # Done → not-Done → Done, or Jira re-fired the webhook),
+                # _store_feature deletes the older row and inserts a fresh
+                # one — newer-wins semantics, so the stored description
+                # always reflects the latest state of the ticket.
+                log.info(
+                    "orchestrator: ticket %s transitioned to Done — dispatching documentation agent",
+                    ticket_key,
+                )
+                doc_result = await documentation.run(
+                    ticket_key=ticket_key,
+                    organization_id=organization_id,
+                    jira_account_id=jira_account_id,
+                )
+                dispatched.append(
+                    {"agent": "documentation", "summary": doc_result.text, "tool_calls": len(doc_result.tool_calls)}
+                )
             else:
                 log.info(
                     "orchestrator: ticket %s is a deprecation ticket — skipping documentation agent",
