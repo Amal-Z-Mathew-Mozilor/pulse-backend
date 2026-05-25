@@ -1,26 +1,20 @@
 """Authentication routes: login, signup, email verification, me, register."""
 
 from __future__ import annotations
-
 import secrets
 from datetime import datetime, timedelta, timezone
-
 from fastapi import APIRouter, Depends, HTTPException, status
 from fastapi.security import OAuth2PasswordRequestForm
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
-
 from ..db import get_session
 from ..dependencies import get_current_admin, get_current_user
 from pydantic import BaseModel, Field
-
 from ..config import get_settings
 from ..models import EmailVerification, Organization, PasswordReset, User
 from ..schemas import SignupPending, Token, UserCreate, UserOut
 from ..services.auth import authenticate_user, create_access_token, get_password_hash
 from ..services.email import send_password_reset_email, send_verification_email
-
-
 class ForgotPasswordRequest(BaseModel):
     email: str
 
@@ -178,17 +172,13 @@ async def signup(
         used=False,
     )
     db.add(verification)
-    await db.commit()
-
-    # 6. Send verification email (non-blocking — never fail the signup on email error)
+    await db.commit() # 6. Send verification email (non-blocking — never fail the signup on email error)
     await send_verification_email(body.email, body.username, token)
 
     return SignupPending(
         message="Check your email to verify your account",
         email=body.email,
     )
-
-
 @router.get("/verify")
 async def verify_email(token: str, db: AsyncSession = Depends(get_session)):
     """Verify an email address via token. Returns a JWT on success."""
@@ -214,11 +204,8 @@ async def verify_email(token: str, db: AsyncSession = Depends(get_session)):
         raise HTTPException(status_code=400, detail="User not found")
     user.email_verified = True
     await db.commit()
-
     jwt_token = create_access_token(data={"sub": user.username, "is_admin": user.is_admin})
     return Token(access_token=jwt_token, token_type="bearer")
-
-
 @router.post("/register", response_model=UserOut, status_code=status.HTTP_201_CREATED)
 async def register(
     body: UserCreate,
@@ -297,8 +284,6 @@ async def forgot_password(
 
     await send_password_reset_email(user.email, user.username, token)
     return generic_response
-
-
 @router.post("/reset-password", response_model=Token)
 async def reset_password(
     body: ResetPasswordRequest,

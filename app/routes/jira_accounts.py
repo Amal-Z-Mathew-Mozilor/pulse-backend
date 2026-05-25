@@ -32,6 +32,12 @@ def _to_out(row) -> JiraAccountOut:
         is_default=row.is_default,
         has_token=svc.has_token(row),
         has_webhook_secret=svc.has_webhook_secret(row),
+        # Health fields drive the connection pill on the Jira Accounts page —
+        # forgetting to pass them here makes every account look like it's
+        # "Not checked yet" even after a sync just stamped auth_failed.
+        last_sync_status=getattr(row, "last_sync_status", "never") or "never",
+        last_sync_at=getattr(row, "last_sync_at", None),
+        last_sync_error=getattr(row, "last_sync_error", None),
         created_at=row.created_at,
         updated_at=row.updated_at,
     )
