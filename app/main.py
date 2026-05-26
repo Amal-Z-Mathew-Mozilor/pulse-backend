@@ -24,7 +24,7 @@ async def lifespan(app: FastAPI):
 
     from .db import session_scope
     from .models import Feature, Organization, User
-    from .services.jira_accounts import list_accounts
+    from .services.jira_accounts import backfill_webhook_secret_encryption, list_accounts
     from .services.project_registry import (
         reclassify_inferred_projects,
         sync_all_accounts,
@@ -62,6 +62,14 @@ async def lifespan(app: FastAPI):
                 )
     except Exception as exc:
         boot_log.warning("startup org backfill failed: %s", exc)
+
+    # Encrypt any webhook_secrets that were stored as plaintext before this fix.
+    try:
+        migrated = await backfill_webhook_secret_encryption()
+        if migrated:
+            boot_log.info("startup: encrypted %d plaintext webhook_secret(s)", migrated)
+    except Exception as exc:
+        boot_log.warning("webhook_secret encryption backfill failed: %s", exc)
 
     # Re-run inference on projects whose product_group was auto-assigned. This
     # corrects past mis-bucketing once the classifier improves, and cascades

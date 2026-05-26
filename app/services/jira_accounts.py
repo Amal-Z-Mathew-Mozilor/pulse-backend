@@ -150,14 +150,22 @@ async def get_account_by_webhook_secret(secret: str) -> JiraAccount | None:
     if not secret:
         return None
     async with session_scope() as db:
-        return (
+        rows = (
             await db.execute(
-                select(JiraAccount).where(
-                    JiraAccount.webhook_secret == secret,
-                    JiraAccount.is_active.is_(True),
-                )
+                select(JiraAccount).where(JiraAccount.is_active.is_(True))
             )
-        ).scalar_one_or_none()
+        ).scalars().all()
+        for row in rows:
+            if not row.webhook_secret:
+                continue
+            try:
+                if decrypt_token(row.webhook_secret) == secret:
+                    return row
+            except RuntimeError:
+                # Pre-encryption plaintext row — compare directly (migration path)
+                if row.webhook_secret == secret:
+                    return row
+        return None
 
 
 # ----------------- First-boot migration -----------------
@@ -175,12 +183,13 @@ async def seed_default_account_from_env() -> JiraAccount | None:
         ).scalar_one_or_none()
         if any_existing is not None:
             return None
+        raw_secret = settings.jira_webhook_secret or ""
         account = JiraAccount(
             label="Default",
             base_url=settings.jira_base_url.rstrip("/"),
             email=settings.jira_email,
             api_token=encrypt_token(settings.jira_api_token),
-            webhook_secret=settings.jira_webhook_secret or "",
+            webhook_secret=encrypt_token(raw_secret) if raw_secret else "",
             is_active=True,
             is_default=True,
         )
@@ -192,6 +201,26 @@ async def seed_default_account_from_env() -> JiraAccount | None:
             account.label, account.id, account.base_url,
         )
         return account
+
+
+async def backfill_webhook_secret_encryption() -> int:
+    """Re-encrypt any webhook_secret rows that are still stored as plaintext.
+    Idempotent — rows that already decrypt successfully are left untouched."""
+    async with session_scope() as db:
+        rows = list((await db.execute(select(JiraAccount))).scalars().all())
+        migrated = 0
+        for row in rows:
+            if not row.webhook_secret:
+                continue
+            try:
+                decrypt_token(row.webhook_secret)  # already encrypted — skip
+            except RuntimeError:
+                row.webhook_secret = encrypt_token(row.webhook_secret)
+                migrated += 1
+        if migrated:
+            await db.flush()
+            log.info("jira_accounts: re-encrypted %d plaintext webhook_secret(s)", migrated)
+    return migrated
 
 
 async def backfill_jira_account_id() -> dict[str, int]:
@@ -261,10 +290,20 @@ async def _webhook_secret_in_use(
 ) -> bool:
     if not secret:
         return False
-    stmt = select(JiraAccount).where(JiraAccount.webhook_secret == secret)
+    stmt = select(JiraAccount)
     if exclude_id is not None:
         stmt = stmt.where(JiraAccount.id != exclude_id)
-    return (await db.execute(stmt.limit(1))).scalar_one_or_none() is not None
+    rows = (await db.execute(stmt)).scalars().all()
+    for row in rows:
+        if not row.webhook_secret:
+            continue
+        try:
+            if decrypt_token(row.webhook_secret) == secret:
+                return True
+        except RuntimeError:
+            if row.webhook_secret == secret:
+                return True
+    return False
 
 
 async def _clear_default_flag(db: AsyncSession, exclude_id: int | None = None) -> None:
@@ -314,7 +353,7 @@ async def create_account(
             base_url=base_url,
             email=email,
             api_token=encrypt_token(api_token),
-            webhook_secret=webhook_secret,
+            webhook_secret=encrypt_token(webhook_secret) if webhook_secret else "",
             is_active=is_active,
             is_default=is_default,
             organization_id=organization_id,
@@ -373,7 +412,7 @@ async def update_account(
         if webhook_secret is not None:
             if webhook_secret and await _webhook_secret_in_use(db, webhook_secret, exclude_id=account_id):
                 raise AccountValidationError("webhook_secret collides with another account")
-            row.webhook_secret = webhook_secret
+            row.webhook_secret = encrypt_token(webhook_secret) if webhook_secret else ""
 
         if is_active is not None:
             row.is_active = is_active
