@@ -47,6 +47,14 @@ SessionLocal = async_sessionmaker(engine, expire_on_commit=False, class_=AsyncSe
 # not new columns on existing tables. For this project's scale we just ALTER
 # the SQLite table to add missing columns on startup. For Postgres the same
 # idempotent ADD COLUMN IF NOT EXISTS works.
+# Postgres-only ALTER COLUMN TYPE statements run idempotently on startup.
+# SQLite doesn't need these — it ignores declared lengths.
+_COLUMN_TYPE_MIGRATIONS: list[tuple[str, str, str]] = [
+    # (table, column, new_type)
+    # webhook_secret widened from VARCHAR(128) to VARCHAR(512) to hold Fernet ciphertext.
+    ("jira_accounts", "webhook_secret", "VARCHAR(512)"),
+]
+
 _ADDITIVE_MIGRATIONS: list[tuple[str, str, str]] = [
     # (table, column, sql_type)
     ("features", "components", "JSON DEFAULT '[]'"),
@@ -130,6 +138,14 @@ async def _create_default_admin() -> None:
 
 async def _apply_additive_migrations(conn) -> None:
     dialect = conn.dialect.name  # 'sqlite' | 'postgresql'
+    if dialect == "postgresql":
+        for table, column, new_type in _COLUMN_TYPE_MIGRATIONS:
+            try:
+                await conn.exec_driver_sql(
+                    f"ALTER TABLE {table} ALTER COLUMN {column} TYPE {new_type} USING {column}::{new_type}"
+                )
+            except Exception:
+                pass
     for table, column, sql_type in _ADDITIVE_MIGRATIONS:
         try:
             if dialect == "sqlite":

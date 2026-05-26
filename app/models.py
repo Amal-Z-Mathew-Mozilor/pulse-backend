@@ -89,7 +89,7 @@ class JiraAccount(Base):
     base_url: Mapped[str] = mapped_column(String(256))
     email: Mapped[str] = mapped_column(String(256))
     api_token: Mapped[str] = mapped_column(String(1024))  # Fernet ciphertext
-    webhook_secret: Mapped[str] = mapped_column(String(128), default="")
+    webhook_secret: Mapped[str] = mapped_column(String(512), default="")  # Fernet ciphertext
     is_active: Mapped[bool] = mapped_column(Boolean, default=True)
     is_default: Mapped[bool] = mapped_column(Boolean, default=False, index=True)
     organization_id: Mapped[int | None] = mapped_column(
