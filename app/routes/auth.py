@@ -3,7 +3,7 @@
 from __future__ import annotations
 import secrets
 from datetime import datetime, timedelta, timezone
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Response, status
 from fastapi.security import OAuth2PasswordRequestForm
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -49,8 +49,21 @@ def _extract_domain(email: str) -> str:
     return email.strip().lower().split("@")[-1]
 
 
+def _set_auth_cookie(response: Response, token: str) -> None:
+    """Attach the JWT as the HttpOnly session cookie (dual-mode auth). Callers
+    still return the token in the JSON body for the Authorization-header path."""
+    settings = get_settings()
+    response.set_cookie(
+        key=settings.auth_cookie_name,
+        value=token,
+        max_age=settings.jwt_expire_minutes * 60,
+        **settings.auth_cookie_params,
+    )
+
+
 @router.post("/login", response_model=Token)
 async def login(
+    response: Response,
     form_data: OAuth2PasswordRequestForm = Depends(),
     db: AsyncSession = Depends(get_session),
 ):
@@ -68,7 +81,26 @@ async def login(
             detail="Please verify your email first",
         )
     token = create_access_token(data={"sub": user.username, "is_admin": user.is_admin})
+    _set_auth_cookie(response, token)
     return Token(access_token=token, token_type="bearer")
+
+
+@router.post("/logout", response_model=GenericMessage)
+async def logout(response: Response):
+    """Clear the session cookie. The Authorization-header path is stateless, so
+    the frontend also drops its stored token; this just removes the cookie."""
+    settings = get_settings()
+    # delete_cookie must use the same path/samesite/secure attributes the cookie
+    # was set with, or the browser won't match and clear it.
+    params = settings.auth_cookie_params
+    response.delete_cookie(
+        key=settings.auth_cookie_name,
+        path=params["path"],
+        samesite=params["samesite"],
+        secure=params["secure"],
+        httponly=params["httponly"],
+    )
+    return GenericMessage(message="Logged out")
 
 
 @router.get("/me", response_model=UserOut)
@@ -180,7 +212,7 @@ async def signup(
         email=body.email,
     )
 @router.get("/verify")
-async def verify_email(token: str, db: AsyncSession = Depends(get_session)):
+async def verify_email(token: str, response: Response, db: AsyncSession = Depends(get_session)):
     """Verify an email address via token. Returns a JWT on success."""
     now = datetime.now(timezone.utc)
 
@@ -205,6 +237,7 @@ async def verify_email(token: str, db: AsyncSession = Depends(get_session)):
     user.email_verified = True
     await db.commit()
     jwt_token = create_access_token(data={"sub": user.username, "is_admin": user.is_admin})
+    _set_auth_cookie(response, jwt_token)
     return Token(access_token=jwt_token, token_type="bearer")
 @router.post("/register", response_model=UserOut, status_code=status.HTTP_201_CREATED)
 async def register(
@@ -287,6 +320,7 @@ async def forgot_password(
 @router.post("/reset-password", response_model=Token)
 async def reset_password(
     body: ResetPasswordRequest,
+    response: Response,
     db: AsyncSession = Depends(get_session),
 ):
     """Consume a password reset token and set the new password.
@@ -316,12 +350,14 @@ async def reset_password(
     await db.commit()
 
     jwt_token = create_access_token(data={"sub": user.username, "is_admin": user.is_admin})
+    _set_auth_cookie(response, jwt_token)
     return Token(access_token=jwt_token, token_type="bearer")
 
 
 @router.post("/google", response_model=Token)
 async def google_auth(
     body: GoogleAuthRequest,
+    response: Response,
     db: AsyncSession = Depends(get_session),
 ):
     """Sign in (or sign up) with a Google ID token. The same domain rules apply
@@ -442,4 +478,5 @@ async def google_auth(
     await db.refresh(user)
 
     jwt_token = create_access_token(data={"sub": user.username, "is_admin": user.is_admin})
+    _set_auth_cookie(response, jwt_token)
     return Token(access_token=jwt_token, token_type="bearer")

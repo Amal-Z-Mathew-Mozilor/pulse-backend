@@ -46,6 +46,18 @@ class Settings(BaseSettings):
     jwt_algorithm: str = "HS256"
     jwt_expire_minutes: int = 1440  # 24 hours
 
+    # ---- Auth session cookie (dual-mode) ----
+    # Pulse issues the JWT both as the JSON `access_token` (consumed by the
+    # frontend's Authorization header, the legacy path) AND as an HttpOnly
+    # cookie. get_current_user accepts either. The cookie is the "Strictly
+    # Necessary" cookie a consent scanner (e.g. CookieYes) will detect.
+    auth_cookie_name: str = "pulse_session"
+    # Cross-site (prod: Vercel frontend + Railway backend) requires
+    # SameSite=None; Secure. Local dev (http://localhost) uses Lax + insecure.
+    # Auto-detected from cors_origins below; override with these envs if needed.
+    auth_cookie_samesite: str = ""  # "" => auto ("none" cross-site, else "lax")
+    auth_cookie_secure: bool | None = None  # None => auto (True cross-site)
+
     # Symmetric key used to encrypt sensitive values in the DB (Jira API tokens).
     # If empty, Pulse auto-generates one and writes it to `.pulse_encryption_key`
     # next to the DB on first boot; subsequent boots reuse it. For production,
@@ -99,6 +111,28 @@ class Settings(BaseSettings):
     @property
     def cors_origins_list(self) -> list[str]:
         return [o.strip() for o in self.cors_origins.split(",") if o.strip()]
+
+    @property
+    def auth_cookie_cross_site(self) -> bool:
+        """True when the frontend is served over https from a different origin
+        (prod: Vercel + Railway). Drives SameSite=None; Secure vs Lax."""
+        return any(o.startswith("https://") for o in self.cors_origins_list)
+
+    @property
+    def auth_cookie_params(self) -> dict:
+        """kwargs for Response.set_cookie / delete_cookie, minus key/value."""
+        cross = self.auth_cookie_cross_site
+        samesite = self.auth_cookie_samesite or ("none" if cross else "lax")
+        secure = self.auth_cookie_secure if self.auth_cookie_secure is not None else cross
+        # SameSite=None is only honoured by browsers when Secure is also set.
+        if samesite.lower() == "none":
+            secure = True
+        return {
+            "httponly": True,
+            "samesite": samesite,
+            "secure": secure,
+            "path": "/",
+        }
 
     @property
     def has_anthropic(self) -> bool:
